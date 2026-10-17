@@ -1,9 +1,14 @@
 # Chukar data
 
 Prebuilt offline data packs for the Chukar maps app. The app downloads them from the rolling
-[`data` release](https://github.com/einelson/chukar-data/releases/tag/data). This repo holds no code. The packs are
+[`data` release](https://github.com/einelson/chukar-data/releases/tag/data). The packs are
 built and published by Chukar's data pipeline, and the release's files are replaced in place, so their links never
-change.
+change. A release holds at most 1,000 files, so newer packs live in the [`data-2` release](https://github.com/einelson/chukar-data/releases/tag/data-2)
+(the manifest in `data` lists them with `release: "data-2"`).
+
+The one piece of code here is the wind map's: `wind/build_wind.py`, run every six hours by the `Wind` workflow, turns
+each new NOAA GFS forecast run into `wind.json` (the index: run time and each region's file) and `wind-conus.zip`,
+`wind-alaska.zip` and `wind-hawaii.zip` (10 m wind on the 0.25° grid out 5 days) in `data-2`.
 
 - `manifest.json` lists every pack: its file, size, version (build time), and the source of each state's data.
 - `<state>-<layer>[-<part>].zip`: one GeoJSON file per map cell for public land, forest roads (MVUM), USFS trails,
@@ -19,6 +24,7 @@ Most of the data is public domain, from US federal agencies:
 - Public land: USGS PAD-US and BLM Surface Management Agency
 - Forest roads and trails: USDA Forest Service MVUM and National Forest System trails
 - BLM roads & trails: BLM Ground Transportation Linear Features
+- Wind: NOAA GFS forecast, from NOAA's open data on AWS
 - Past fires: National Interagency Fire Center (Interagency Fire Perimeter History, WFIGS)
 - Power lines: HIFLD
 - Cell coverage: FCC Broadband Data Collection; 850 MHz license records via HIFLD

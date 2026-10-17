@@ -1,0 +1,71 @@
+# Rebuilds the wind map data (wind/build_wind.py) from each new GFS run and replaces it in the data-2 release.
+# Public repository, standard runner: free. Runs about 4 h after each GFS cycle, once the run's 5 days are out.
+name: Wind
+
+on:
+  schedule:
+    - cron: "20 4,10,16,22 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if this GFS run is already published"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wind
+  cancel-in-progress: false
+
+jobs:
+  wind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE: data-2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r wind/requirements.txt
+
+      - name: Build
+        id: build
+        run: |
+          set +e
+          url="https://github.com/${{ github.repository }}/releases/download/$RELEASE/wind.json"
+          if [ "${{ inputs.force }}" = "true" ]; then
+            python wind/build_wind.py --out build
+          else
+            python wind/build_wind.py --out build --if-newer-than "$url"
+          fi
+          status=$?
+          if [ $status -eq 3 ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          exit $status
+
+      - name: Publish
+        if: steps.build.outputs.skip != 'true'
+        run: |
+          # The region files first and the index last, so the index never names a run whose files aren't up yet.
+          gh release upload "$RELEASE" build/wind-*.zip --clobber
+          gh release upload "$RELEASE" build/wind.json --clobber
+
+      # GitHub turns off a public repository's schedules after 60 days without activity: a commit now and then keeps
+      # this one running.
+      - name: Keep the schedule alive
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - last )) -gt $(( 40 * 86400 )) ]; then
+            date -u +%Y-%m-%dT%H:%M:%SZ > wind/last-keepalive.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add wind/last-keepalive.txt
+            git commit -m "Keep the wind schedule running"
+            git push
+          fi
