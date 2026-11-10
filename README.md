@@ -6,9 +6,10 @@ built and published by Chukar's data pipeline, and the release's files are repla
 change. A release holds at most 1,000 files, so newer packs live in the [`data-2` release](https://github.com/einelson/chukar-data/releases/tag/data-2)
 (the manifest in `data` lists them with `release: "data-2"`).
 
-The one piece of code here is the wind map's: `wind/build_wind.py`, run every six hours by the `Wind` workflow, turns
+The one piece of code here is the weather maps': `wind/build_wind.py`, run every six hours by the `Wind` workflow, turns
 each new NOAA GFS forecast run into `wind.json` (the index: run time and each region's file) and `wind-conus.zip`,
-`wind-alaska.zip` and `wind-hawaii.zip` (10 m wind on the 0.25° grid out 5 days) in `data-2`.
+`wind-alaska.zip` and `wind-hawaii.zip` (10 m wind on the 0.25° grid out 5 days) in `data-2`, and likewise `temp.json`
+and `temp-<region>.zip` (2 m temperature).
 
 `data-2` also holds `crop-fields-<st>.pmtiles`: every farm field in each of the lower 48 with its crop each year
 2018–2025, as PMTiles vector tiles the app streams by HTTP range or downloads whole.
@@ -27,7 +28,7 @@ Most of the data is public domain, from US federal agencies:
 - Public land: USGS PAD-US and BLM Surface Management Agency
 - Forest roads and trails: USDA Forest Service MVUM and National Forest System trails
 - BLM roads & trails: BLM Ground Transportation Linear Features
-- Wind: NOAA GFS forecast, from NOAA's open data on AWS
+- Wind and temperature: NOAA GFS forecast, from NOAA's open data on AWS
 - Crop fields: USDA NASS Crop Sequence Boundaries 2018–2025
 - Past fires: National Interagency Fire Center (Interagency Fire Perimeter History, WFIGS)
 - Power lines: HIFLD

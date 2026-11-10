@@ -1,4 +1,4 @@
-# Rebuilds the wind map data (wind/build_wind.py) from each new GFS run and replaces it in the data-2 release.
+# Rebuilds the wind and temperature map data (wind/build_wind.py) from each new GFS run and replaces it in the data-2 release.
 # Public repository, standard runner: free. Runs about 4 h after each GFS cycle, once the run's 5 days are out.
 name: Wind
 
@@ -39,7 +39,7 @@ jobs:
         id: build
         run: |
           set +e
-          url="https://github.com/${{ github.repository }}/releases/download/$RELEASE/wind.json"
+          url="https://github.com/${{ github.repository }}/releases/download/$RELEASE/temp.json"
           if [ "${{ inputs.force }}" = "true" ]; then
             python wind/build_wind.py --out build
           else
@@ -52,9 +52,12 @@ jobs:
       - name: Publish
         if: steps.build.outputs.skip != 'true'
         run: |
-          # The region files first and the index last, so the index never names a run whose files aren't up yet.
+          # The region files first and each index last, so an index never names a run whose files aren't up yet.
+          # temp.json goes up last of all: it's what the Build step checks, so a run that stopped halfway is built again.
           gh release upload "$RELEASE" build/wind-*.zip --clobber
           gh release upload "$RELEASE" build/wind.json --clobber
+          gh release upload "$RELEASE" build/temp-*.zip --clobber
+          gh release upload "$RELEASE" build/temp.json --clobber
 
       # GitHub turns off a public repository's schedules after 60 days without activity: a commit now and then keeps
       # this one running.
