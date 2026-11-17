@@ -1,4 +1,4 @@
-# Rebuilds the wind and temperature map data (wind/build_wind.py) from each new GFS run and replaces it in the data-2 release.
+# Rebuilds the wind, temperature, cloud and snow map data (wind/build_wind.py) from each new GFS run and replaces it in the data-2 release.
 # Public repository, standard runner: free. Runs about 4 h after each GFS cycle, once the run's 5 days are out.
 name: Wind
 
@@ -56,6 +56,10 @@ jobs:
           # temp.json goes up last of all: it's what the Build step checks, so a run that stopped halfway is built again.
           gh release upload "$RELEASE" build/wind-*.zip --clobber
           gh release upload "$RELEASE" build/wind.json --clobber
+          gh release upload "$RELEASE" build/cloud-*.zip --clobber
+          gh release upload "$RELEASE" build/cloud.json --clobber
+          gh release upload "$RELEASE" build/snow-*.zip --clobber
+          gh release upload "$RELEASE" build/snow.json --clobber
           gh release upload "$RELEASE" build/temp-*.zip --clobber
           gh release upload "$RELEASE" build/temp.json --clobber
 

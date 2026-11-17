@@ -1,0 +1,75 @@
+# Builds HRRR tiles (hrrr/build_hrrr.py) from each new run and publishes them to Cloudflare R2.
+# Public repository, standard runner: free. See the app repo's docs/HRRR_PLAN.md.
+#
+# Needs, in the repository's settings:
+#   secrets  R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY  (an R2 API token: Object Read & Write, this bucket)
+#   vars     R2_BUCKET        the bucket's name
+#            R2_PUBLIC_URL    its public address (custom domain), no trailing slash, e.g. https://data.example.com
+name: HRRR
+
+on:
+  schedule:
+    # Hourly, once each run's 18 hours are out (about 50 minutes after the hour it starts).
+    - cron: "55 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if these runs are already published"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hrrr
+  cancel-in-progress: false
+
+jobs:
+  hrrr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      BUCKET: ${{ vars.R2_BUCKET }}
+      PUBLIC: ${{ vars.R2_PUBLIC_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r hrrr/requirements.txt
+
+      # The hourly set every run; the main set (48 hours) only when a new 00/06/12/18Z run is out.
+      - name: Build and publish
+        run: |
+          set -u
+          for set in hourly main; do
+            set +e
+            if [ "${{ inputs.force }}" = "true" ]; then
+              python hrrr/build_hrrr.py --set "$set" --out build
+            else
+              python hrrr/build_hrrr.py --set "$set" --out build --if-newer-than "$PUBLIC/hrrr/$set.json"
+            fi
+            status=$?
+            set -e
+            if [ $status -eq 3 ]; then continue; fi
+            if [ $status -ne 0 ]; then exit $status; fi
+
+            folder=$(python -c "import json; print(json.load(open('build/$set.json'))['folder'])")
+            # A run's tiles never change: cached for a week. The index, last, a minute.
+            aws s3 cp "build/$folder/" "s3://$BUCKET/hrrr/$folder/" --recursive --endpoint-url "$ENDPOINT" \
+              --content-type application/zip --cache-control "public, max-age=604800, immutable" --only-show-errors
+            aws s3 cp "build/$set.json" "s3://$BUCKET/hrrr/$set.json" --endpoint-url "$ENDPOINT" \
+              --content-type application/json --cache-control "public, max-age=60" --only-show-errors
+
+            # Keep this run and the one before (an app may be mid-download); delete older ones (deletes are free).
+            for old in $(aws s3 ls "s3://$BUCKET/hrrr/$set/" --endpoint-url "$ENDPOINT" | awk '{print $2}' | sort | head -n -2); do
+              aws s3 rm "s3://$BUCKET/hrrr/$set/$old" --recursive --endpoint-url "$ENDPOINT" --only-show-errors
+            done
+          done
