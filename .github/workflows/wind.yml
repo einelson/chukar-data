@@ -26,6 +26,12 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE: data-2
+      # The same files also go to the public R2 bucket (releases/data-2/), which newer app builds read.
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      BUCKET: ${{ vars.R2_BUCKET }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,6 +68,19 @@ jobs:
           gh release upload "$RELEASE" build/snow.json --clobber
           gh release upload "$RELEASE" build/temp-*.zip --clobber
           gh release upload "$RELEASE" build/temp.json --clobber
+
+      - name: Publish to R2
+        if: steps.build.outputs.skip != 'true'
+        run: |
+          # Same order: region files, then indexes, temp.json last. Indexes cached a minute, region files five.
+          for f in build/*-*.zip; do
+            aws s3 cp "$f" "s3://$BUCKET/releases/$RELEASE/$(basename "$f")" --endpoint-url "$ENDPOINT" \
+              --content-type application/zip --cache-control "public, max-age=300" --only-show-errors
+          done
+          for name in wind cloud snow temp; do
+            aws s3 cp "build/$name.json" "s3://$BUCKET/releases/$RELEASE/$name.json" --endpoint-url "$ENDPOINT" \
+              --content-type application/json --cache-control "public, max-age=60" --only-show-errors
+          done
 
       # GitHub turns off a public repository's schedules after 60 days without activity: a commit now and then keeps
       # this one running.
