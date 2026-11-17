@@ -9,8 +9,9 @@ name: HRRR
 
 on:
   schedule:
-    # Hourly, once each run's 18 hours are out (about 50 minutes after the hour it starts).
-    - cron: "55 * * * *"
+    # Twice an hour: once each run's 18 hours are out (about 50 minutes after the hour it starts), and again half an
+    # hour later, since GitHub sometimes skips a scheduled run when it's busy. A run with nothing new stops in seconds.
+    - cron: "25,55 * * * *"
   workflow_dispatch:
     inputs:
       force:
