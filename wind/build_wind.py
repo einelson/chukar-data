@@ -1,20 +1,28 @@
 """
-Builds Chukar's wind and temperature map data from NOAA's GFS forecast: 10 m wind and 2 m temperature on the 0.25°
-grid, cut to each region and packed small enough for a phone to keep for offline use.
+Builds Chukar's wind and temperature map data from NOAA's GFS forecast: 10 m wind, 2 m temperature, total cloud cover
+and snow depth on the 0.25° grid, cut to each region and packed small enough for a phone to keep for offline use.
 
 Run by .github/workflows/wind.yml every six hours. Reads the GFS run from NOAA's open data bucket on AWS
-(noaa-gfs-bdp-pds; public domain), fetching only the three records needed of each forecast hour by byte range.
+(noaa-gfs-bdp-pds; public domain), fetching only the five records needed of each forecast hour by byte range.
 
 Output, in --out (default build/):
   wind-<region>.zip   wind.json (the metadata below) + wind.bin (the grids)
   wind.json           the index the app checks: the run, and each region's box, file and size
   temp-<region>.zip   temp.json + temp.bin, the same way
   temp.json           the temperature index
+  cloud-<region>.zip  cloud.json + cloud.bin: total cloud cover (the wind map's thermals, offline)
+  cloud.json          its index
+  snow-<region>.zip   snow.json + snow.bin: snow depth
+  snow.json           its index
 
 wind.bin, per forecast time in order: the u grid then the v grid, each ny rows from north to south of nx int8
 values, in units of `scale` m/s (u: toward the east, v: toward the north). -128 means no data.
 
 temp.bin, per forecast time in order: one grid, laid out the same, in units of `scale` °C.
+
+cloud.bin and snow.bin the same, one grid per time: cloud cover in % (scale 1, the whole sky as one layer, at that
+moment), snow depth in units of `scale` cm (2 cm steps, so up to 254 cm). Added 2026-11 as new files; the wind and
+temperature files are unchanged.
 
 Usage: python build_wind.py [--out build] [--run 2026101706] [--if-newer-than https://.../wind.json]
 """
@@ -38,6 +46,8 @@ import pygrib
 BUCKET = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
 FORMAT = 1
 SCALE = 0.5  # m/s or °C per step: int8 covers ±63.5 m/s (142 mph) and ±63.5 °C (-82..146 °F)
+CLOUD_SCALE = 1  # % per step
+SNOW_SCALE = 2  # cm per step
 NO_DATA = -128
 
 # Forecast hours kept: hourly for a day, 3-hourly to 3 days, 6-hourly to 5 days (49 grids).
@@ -50,7 +60,13 @@ REGIONS = {
     "hawaii": {"west": -161.0, "east": -154.0, "south": 18.0, "north": 23.0},
 }
 
-WANTED = {("UGRD", "10 m above ground"), ("VGRD", "10 m above ground"), ("TMP", "2 m above ground")}
+WANTED = {
+    ("UGRD", "10 m above ground"),
+    ("VGRD", "10 m above ground"),
+    ("TMP", "2 m above ground"),
+    ("TCDC", "entire atmosphere"),
+    ("SNOD", "surface"),
+}
 
 USER_AGENT = "Chukar wind builder (github.com/einelson/chukar-data)"
 
@@ -95,15 +111,17 @@ def latest_run(now: dt.datetime) -> dt.datetime:
     raise SystemExit("No complete GFS run in the last two days")
 
 
-def records(run: dt.datetime, hour: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """The 10 m u and v (m/s) and 2 m temperature (°C) grids (721 x 1440, north to south, 0..359.75° east) of one forecast hour."""
+def records(run: dt.datetime, hour: int) -> dict[str, np.ndarray]:
+    """One forecast hour's grids (721 x 1440, north to south, 0..359.75° east): u and v (m/s), temperature (°C), cloud
+    cover (%) and snow depth (cm)."""
     url = step_url(run, hour)
     lines = get(url + ".idx").decode().splitlines()
     starts = [int(line.split(":")[1]) for line in lines]
     grids = {}
     for i, line in enumerate(lines):
         fields = line.split(":")
-        if (fields[3], fields[4]) in WANTED:
+        # Cloud cover comes twice an hour: at that moment, and averaged since the last 6-hour mark ("0-3 hour ave").
+        if (fields[3], fields[4]) in WANTED and "ave" not in fields[5]:
             end = starts[i + 1] - 1 if i + 1 < len(starts) else ""
             data = get(url, {"Range": f"bytes={starts[i]}-{end}"})
             message = pygrib.fromstring(data)
@@ -114,7 +132,13 @@ def records(run: dt.datetime, hour: int) -> tuple[np.ndarray, np.ndarray, np.nda
             grids[fields[3]] = values
     if set(grids) != {variable for variable, _ in WANTED}:
         raise RuntimeError(f"f{hour:03d}: missing {sorted({v for v, _ in WANTED} - set(grids))} in the index")
-    return grids["UGRD"], grids["VGRD"], grids["TMP"] - 273.15
+    return {
+        "u": grids["UGRD"],
+        "v": grids["VGRD"],
+        "temp": grids["TMP"] - 273.15,
+        "cloud": grids["TCDC"],
+        "snow": grids["SNOD"] * 100,
+    }
 
 
 def crop(grid: np.ndarray, box: dict) -> np.ndarray:
@@ -127,14 +151,21 @@ def crop(grid: np.ndarray, box: dict) -> np.ndarray:
     return grid[row0:row1][:, cols]
 
 
-def quantize(grid: np.ndarray) -> np.ndarray:
-    q = np.round(grid / SCALE)
+def quantize(grid: np.ndarray, scale: float = SCALE) -> np.ndarray:
+    q = np.round(grid / scale)
     q = np.where(np.isfinite(q), np.clip(q, -127, 127), NO_DATA)
     return q.astype(np.int8)
 
 
 def write_product(
-    out: Path, name: str, model: str, run: dt.datetime, times: list[int], parts: dict[str, list[bytes]], grids_per_time: int
+    out: Path,
+    name: str,
+    model: str,
+    run: dt.datetime,
+    times: list[int],
+    parts: dict[str, list[bytes]],
+    grids_per_time: int,
+    scale: float = SCALE,
 ) -> None:
     """Writes <name>-<region>.zip for each region, then the <name>.json index that names them."""
     built = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
@@ -158,7 +189,7 @@ def write_product(
             "dy": 0.25,
             "nx": nx,
             "ny": ny,
-            "scale": SCALE,
+            "scale": scale,
             "noData": NO_DATA,
             "times": times,
         }
@@ -177,16 +208,22 @@ def build(run: dt.datetime, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     wind = {region: [] for region in REGIONS}
     temp = {region: [] for region in REGIONS}
+    cloud = {region: [] for region in REGIONS}
+    snow = {region: [] for region in REGIONS}
     times = []
     for hour in HOURS:
-        u, v, t = records(run, hour)
+        g = records(run, hour)
         times.append(int((run + dt.timedelta(hours=hour)).timestamp() * 1000))
         for region, box in REGIONS.items():
-            wind[region].append(quantize(crop(u, box)).tobytes() + quantize(crop(v, box)).tobytes())
-            temp[region].append(quantize(crop(t, box)).tobytes())
+            wind[region].append(quantize(crop(g["u"], box)).tobytes() + quantize(crop(g["v"], box)).tobytes())
+            temp[region].append(quantize(crop(g["temp"], box)).tobytes())
+            cloud[region].append(quantize(crop(g["cloud"], box), CLOUD_SCALE).tobytes())
+            snow[region].append(quantize(crop(g["snow"], box), SNOW_SCALE).tobytes())
         print(f"  f{hour:03d}", flush=True)
     write_product(out, "wind", "NOAA GFS 0.25°, 10 m wind", run, times, wind, 2)
     write_product(out, "temp", "NOAA GFS 0.25°, 2 m temperature", run, times, temp, 1)
+    write_product(out, "cloud", "NOAA GFS 0.25°, total cloud cover (%)", run, times, cloud, 1, CLOUD_SCALE)
+    write_product(out, "snow", "NOAA GFS 0.25°, snow depth (cm)", run, times, snow, 1, SNOW_SCALE)
 
 
 def main() -> None:
