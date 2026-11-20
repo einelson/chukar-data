@@ -4,7 +4,9 @@ name: Wind
 
 on:
   schedule:
-    - cron: "20 4,10,16,22 * * *"
+    # Every hour, though a GFS run is out every six: GitHub sometimes skips a scheduled run when it's busy, and a run
+    # with nothing new stops in seconds (--if-newer-than).
+    - cron: "20 * * * *"
   workflow_dispatch:
     inputs:
       force:
