@@ -16,6 +16,11 @@ hrrr.bin, per forecast time in order: temperature, then u, then v, each ny rows 
 values in steps of `scale` (°C or m/s; u toward the east, v toward the north, turned to true north). -128 means no
 data. ground.bin: ny x nx little-endian int16 metres, rows north to south.
 
+sky.json + sky.bin (added 2026-11-20; older app builds don't read them): per forecast time, visibility then cloud
+ceiling, each ny x nx uint8 rows north to south. Visibility in steps of `visScale` metres, `visCap` meaning that far
+or more; ceiling (the lowest broken or overcast layer, metres above sea level) in steps of `ceilingScale`, 255 = none
+below 6 km.
+
 A tile is 2° square with points every 0.025° (81 x 81), its edges shared with its neighbours'. Tile names are the
 south-west corner: "w112n40" is 112-110°W, 40-42°N.
 
@@ -50,6 +55,15 @@ PER_SIDE = int(round(TILE_DEG / STEP)) + 1
 WEST, EAST, SOUTH, NORTH = -126, -66, 24, 50
 SETS = {"hourly": 18, "main": 48}
 WANTED = ["TMP:2 m above ground", "UGRD:10 m above ground", "VGRD:10 m above ground"]
+# Fog and low cloud (sky.bin): visibility at the surface, and the ceiling's height above sea level.
+SKY = ["VIS:surface", "HGT:cloud ceiling"]
+# Only short ranges matter for seeing game, and only ceilings that can hide terrain (the lower 48's highest point is
+# 4,421 m); coarse steps keep the tiles small (the noisy visibility field compresses poorly).
+VIS_SCALE = 200
+VIS_CAP = 50  # 10 km: "clear"
+CEILING_SCALE = 100
+CEILING_TOP = 6000
+NO_CEILING = 255
 USER_AGENT = "Chukar HRRR builder (github.com/einelson/chukar-data)"
 
 
@@ -151,6 +165,17 @@ def quantize(values: np.ndarray, scale: float = SCALE) -> np.ndarray:
     return np.where(np.isfinite(q), np.clip(q, -127, 127), NO_DATA).astype(np.int8)
 
 
+def visibility_bytes(metres: np.ndarray) -> np.ndarray:
+    q = np.round(metres / VIS_SCALE)
+    return np.where(np.isfinite(q), np.clip(q, 0, VIS_CAP), VIS_CAP).astype(np.uint8)
+
+
+def ceiling_bytes(metres: np.ndarray) -> np.ndarray:
+    q = np.round(metres / CEILING_SCALE)
+    ok = np.isfinite(metres) & (metres <= CEILING_TOP)
+    return np.where(ok, np.clip(q, 0, 254), NO_CEILING).astype(np.uint8)
+
+
 def build(which: str, run: dt.datetime, out: Path) -> None:
     hours = list(range(SETS[which] + 1))
     tile_list = tiles()
@@ -160,16 +185,20 @@ def build(which: str, run: dt.datetime, out: Path) -> None:
     lats = np.concatenate([np.repeat(south + TILE_DEG - offsets, PER_SIDE) for _, _, south in tile_list])
     per_tile = PER_SIDE * PER_SIDE
 
-    first = records(run, 0, WANTED + ["HGT:surface"])
+    first = records(run, 0, WANTED + SKY + ["HGT:surface"])
     sampler = Sampler(first["TMP:2 m above ground"], lons, lats)
     ground = sampler.sample(first["HGT:surface"].values)
 
     grids = []  # per hour: temperature, u, v at every point, int8
+    sky = []  # per hour: visibility, ceiling at every point, uint8
     for hour in hours:
-        g = first if hour == 0 else records(run, hour, WANTED)
+        g = first if hour == 0 else records(run, hour, WANTED + SKY)
         t = sampler.sample(g["TMP:2 m above ground"].values) - 273.15
         u, v = sampler.wind(sampler.sample(g["UGRD:10 m above ground"].values), sampler.sample(g["VGRD:10 m above ground"].values))
         grids.append((quantize(t), quantize(u), quantize(v)))
+        vis = sampler.sample(g["VIS:surface"].values)
+        ceiling = sampler.sample(g["HGT:cloud ceiling"].values)
+        sky.append((visibility_bytes(vis), ceiling_bytes(ceiling)))
         print(f"  f{hour:02d}", flush=True)
 
     stamp = run.strftime("%Y%m%d%H")
@@ -207,6 +236,20 @@ def build(which: str, run: dt.datetime, out: Path) -> None:
             z.writestr("hrrr.json", json.dumps(meta))
             z.writestr("hrrr.bin", data)
             z.writestr("ground.bin", heights.tobytes())
+            z.writestr(
+                "sky.json",
+                json.dumps(
+                    {
+                        "format": 1,
+                        "fields": ["visibility", "ceiling"],
+                        "visScale": VIS_SCALE,
+                        "visCap": VIS_CAP,
+                        "ceilingScale": CEILING_SCALE,
+                        "noCeiling": NO_CEILING,
+                    }
+                ),
+            )
+            z.writestr("sky.bin", b"".join(vis[part].tobytes() + ceil[part].tobytes() for vis, ceil in sky))
         size = path.stat().st_size
         total += size
         index_tiles.append({"id": name, "west": west, "south": south, "bytes": size})
