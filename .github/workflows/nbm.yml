@@ -1,0 +1,69 @@
+# Builds NBM tiles (nbm/build_nbm.py) from each new 00/06/12/18Z run and publishes them to Cloudflare R2, beside the
+# HRRR tiles (hrrr/nbm.json, hrrr/nbm/<run>/). Public repository, standard runner: free.
+# Same secrets and vars as the HRRR workflow (hrrr.yml).
+name: NBM
+
+on:
+  schedule:
+    # A run's 72 hours are out about 1 h 15 min after it starts; a second try half an hour later, since GitHub
+    # sometimes skips a scheduled run when it's busy. A run with nothing new stops in seconds.
+    - cron: "25,55 1,7,13,19 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if this run is already published"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nbm
+  cancel-in-progress: false
+
+jobs:
+  nbm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      BUCKET: ${{ vars.R2_BUCKET }}
+      PUBLIC: ${{ vars.R2_PUBLIC_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r nbm/requirements.txt
+
+      - name: Build and publish
+        run: |
+          set -u
+          set +e
+          if [ "${{ inputs.force }}" = "true" ]; then
+            python nbm/build_nbm.py --out build
+          else
+            python nbm/build_nbm.py --out build --if-newer-than "$PUBLIC/hrrr/nbm.json"
+          fi
+          status=$?
+          set -e
+          if [ $status -eq 3 ]; then exit 0; fi
+          if [ $status -ne 0 ]; then exit $status; fi
+
+          folder=$(python -c "import json; print(json.load(open('build/nbm.json'))['folder'])")
+          # A run's tiles never change: cached for a week. The index, last, a minute.
+          aws s3 cp "build/$folder/" "s3://$BUCKET/hrrr/$folder/" --recursive --endpoint-url "$ENDPOINT" \
+            --content-type application/zip --cache-control "public, max-age=604800, immutable" --only-show-errors
+          aws s3 cp "build/nbm.json" "s3://$BUCKET/hrrr/nbm.json" --endpoint-url "$ENDPOINT" \
+            --content-type application/json --cache-control "public, max-age=60" --only-show-errors
+
+          # Keep this run and the one before (an app may be mid-download); delete older ones (deletes are free).
+          for old in $(aws s3 ls "s3://$BUCKET/hrrr/nbm/" --endpoint-url "$ENDPOINT" | awk '{print $2}' | sort | head -n -2); do
+            aws s3 rm "s3://$BUCKET/hrrr/nbm/$old" --recursive --endpoint-url "$ENDPOINT" --only-show-errors
+          done

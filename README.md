@@ -17,6 +17,10 @@ tiles of 2 m temperature and 10 m wind, published to Cloudflare R2 (`https://dat
 release, since it changes hourly: `hourly.json` (the latest run, 18 hours) and `main.json` (the latest 00/06/12/18Z
 run, 48 hours), each naming its run's folder of tiles.
 
+`nbm/build_nbm.py`, run four times a day by the `NBM` workflow, builds the same tiles from NOAA's National Blend of
+Models (2.5 km, the latest 00/06/12/18Z run, 72 hours) as a third set beside them, `nbm.json`. The app blends NBM with
+HRRR; older app builds only read `hourly` and `main`.
+
 `data-2` also holds `crop-fields-<st>.pmtiles`: every farm field in each of the lower 48 with its crop each year
 2018–2025, as PMTiles vector tiles the app streams by HTTP range or downloads whole.
 
@@ -34,7 +38,7 @@ Most of the data is public domain, from US federal agencies:
 - Public land: USGS PAD-US and BLM Surface Management Agency
 - Forest roads and trails: USDA Forest Service MVUM and National Forest System trails
 - BLM roads & trails: BLM Ground Transportation Linear Features
-- Wind and temperature: NOAA GFS and HRRR forecasts, from NOAA's open data on AWS
+- Wind and temperature: NOAA GFS, HRRR and NBM forecasts (and URMA's ground height), from NOAA's open data on AWS
 - Crop fields: USDA NASS Crop Sequence Boundaries 2018–2025
 - Past fires: National Interagency Fire Center (Interagency Fire Perimeter History, WFIGS)
 - Power lines: HIFLD
