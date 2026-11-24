@@ -20,7 +20,7 @@ Output, in --out (default build/):
 The zip's files keep the HRRR names so one reader serves both. hrrr.bin, per forecast time in order: temperature, then
 u, then v, each ny rows from north to south of nx int8 values in steps of `scale` (°C or m/s; u toward the east, v
 toward the north; NBM's wind direction is already from true north). -128 means no data. ground.bin: ny x nx
-little-endian int16 metres, rows north to south.
+little-endian int16 meters, rows north to south.
 
 Usage: python build_nbm.py [--run 2026112412] [--out build] [--if-newer-than URL]
 """
